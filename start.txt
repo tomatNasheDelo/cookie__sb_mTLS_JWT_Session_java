@@ -1,0 +1,109 @@
+Детальная инструкция: Cookie, Session, JWT и mTLS Lab (Java)
+============================================================
+
+Назначение
+----------
+
+Java-версия учебного React + Spring Boot проекта для сравнения трёх механизмов:
+
+1. Session — состояние пользователя хранится на сервере; браузер отправляет идентификатор сессии в HttpOnly cookie JSESSIONID.
+2. JWT — подписанный токен предъявляется в Authorization: Bearer; backend проверяет подпись и срок действия.
+3. mTLS — взаимная проверка сертификатов двух сервисов при TLS соединении. mTLS не заменяет пользовательскую аутентификацию.
+
+Стек: frontend React + TypeScript + Vite 7; backend Java 17 + Spring Boot; Gradle Kotlin DSL; внутренний Java Spring Boot сервис с обязательным клиентским сертификатом.
+
+Архитектура
+------------
+
+Браузер/React --HTTP локально или HTTPS через Render--> backend Spring Boot
+                                                        |-- Session API: HttpSession/JSESSIONID
+                                                        |-- JWT API: подписанный Bearer token
+                                                        `-- HTTPS + mTLS --> mtls-resource
+
+Структура каталогов сохранена; backend-код из Kotlin переписан на Java. Frontend, Docker Compose и вспомогательные скрипты оставлены с тем же назначением.
+
+Файлы и роли
+------------
+
+- frontend/src/App.tsx — UI для Session, JWT и mTLS; запросы передают credentials.
+- backend/src/main/java/com/example/cookielab/AuthController.java — demo login и endpoints /api/auth/session/*, /api/auth/jwt/*.
+- backend/.../MtlsClientConfig.java — RestTemplate с клиентским сертификатом и CA truststore, стандартная TLS hostname verification.
+- backend/.../MtlsController.java — вызывает внутренний сервис по mTLS.
+- backend/.../CorsConfig.java — разрешает заданные CORS origin с credentials.
+- mtls-resource/.../application.yml — HTTPS и обязательная проверка клиентского сертификата.
+- scripts/generate-certs.sh — создаёт локальный CA, server/client certs, PKCS#12 keystores и truststore.
+- compose.yaml — запускает сервисы после подготовки certs/.
+
+Сертификаты для локального mTLS
+-------------------------------
+
+Нужны OpenSSL и JDK 17+ с keytool. Из корня репозитория:
+
+chmod +x scripts/generate-certs.sh
+./scripts/generate-certs.sh
+
+Скрипт создаёт локальный CA, сертификаты mtls-resource и backend-client, keystores PKCS#12 и truststore. Пароль по умолчанию `changeit` предназначен только для локального обучения. Сертификаты не коммитятся в Git.
+
+Локальный запуск без Docker
+---------------------------
+
+Требуются JDK 17+, Gradle 8.10+, Node.js 20.19+ либо 22.12+, OpenSSL. Сначала сгенерируйте сертификаты, как указано выше.
+
+Терминал 1 — внутренний HTTPS сервис с обязательным клиентским сертификатом:
+
+cd mtls-resource
+gradle bootRun
+
+Терминал 2 — backend (сертификаты доступны в ../certs):
+
+cd backend
+gradle bootRun
+
+Для origin по умолчанию используется http://localhost:5173. Другой origin задаётся переменной CORS_ALLOWED_ORIGINS.
+
+Терминал 3 — React:
+
+cd frontend
+npm install
+npm run dev
+
+Откройте http://localhost:5173. Demo login: `student / change-me-local`. После входа проверьте Session, JWT и mTLS отдельными кнопками. HttpOnly JSESSIONID можно проверить в DevTools → Application/Storage.
+
+Endpoints
+---------
+
+POST http://localhost:8080/api/auth/session/login  JSON {"username":"student","password":"change-me-local"}
+GET  http://localhost:8080/api/auth/session/me
+POST http://localhost:8080/api/auth/session/logout
+POST http://localhost:8080/api/auth/jwt/login  JSON с теми же demo credentials
+GET  http://localhost:8080/api/auth/jwt/me  заголовок Authorization: Bearer <token>
+GET  http://localhost:8080/api/mtls/ping  backend вызывает https://localhost:8444/internal/ping с mTLS
+
+Docker Compose
+--------------
+
+После генерации certs/ из корня:
+
+docker compose up --build
+
+Откройте http://localhost:5173. Остановка: Ctrl+C, затем `docker compose down`. Compose запускает mtls-resource, backend и Vite frontend.
+
+Cloudflare Pages + Render
+-------------------------
+
+Frontend на Cloudflare Pages:
+1. Root directory `frontend`; build command `npm run build`; output directory `dist`.
+2. В Pages Environment variables задайте `VITE_API_URL=https://<your-backend>.onrender.com` без завершающего `/`.
+3. После изменения VITE_API_URL пересоберите Pages. VITE_* включается в публичный bundle — не помещайте туда секреты.
+
+Backend на Render:
+1. Создайте Docker Web Service из этого репозитория с Root Directory `backend`.
+2. Задайте точный CORS_ALLOWED_ORIGINS для сайта Cloudflare Pages.
+3. Для cross-site cookie обычно нужны SESSION_COOKIE_SECURE=true и SESSION_COOKIE_SAME_SITE=None.
+4. Установите сильный JWT_SECRET_BASE64, например `openssl rand -base64 32`, и собственный DEMO_PASSWORD.
+5. Для mTLS нужен доступный mtls-resource сервис, корректные сертификаты и CA. Обычный backend deploy не создаёт этот сервис автоматически.
+
+Ограничения безопасности
+------------------------
+
+Это образовательный пример: нет базы пользователей, password hashing, CSRF token, rate limiting, production session store и JWT key rotation. Не отключайте TLS hostname verification, не используйте TrustAll сертификаты и не коммитьте ключи. Для production используйте безопасное хранение секретов и управляемую выдачу/ротацию сертификатов.
